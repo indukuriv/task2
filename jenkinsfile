@@ -10,12 +10,12 @@ pipeline {
     IMAGE_TAG          = "${env.BUILD_NUMBER}"
 
     // ─────────── GitHub Repository Settings ───────────
-    GIT_REPO_URL       = 'git@github.com:YOUR-USER/your-challenge.git'
-    GIT_BRANCH         = 'main'
-    GIT_CREDENTIALS_ID = 'github-ssh-credentials'
+    GIT_REPO_URL       = 'https://github.com/indukuriv/task2.git'
+    GIT_BRANCH         = 'test'
+    GIT_CREDENTIALS_ID = '61e8a378-4c82-42d0-998e-eb8521d1f190'
 
     // ───────── AWS Plugin Credential ID ─────────
-    AWS_CREDENTIALS_ID = 'aws-creds-id'
+    AWS_CREDENTIALS_ID = '521051890477'
   }
 
   stages {
