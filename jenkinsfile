@@ -50,23 +50,6 @@ pipeline {
       }
     }
 
-    stage('Push to ECR') {
-      steps {
-        withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
-          sh """
-            aws ecr get-login-password --region ${AWS_REGION} \\
-              | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-
-            docker tag backend-test:${IMAGE_TAG} ${BACKEND_ECR}:${IMAGE_TAG}
-            docker push ${BACKEND_ECR}:${IMAGE_TAG}
-
-            docker tag frontend-test:${IMAGE_TAG} ${FRONTEND_ECR}:${IMAGE_TAG}
-            docker push ${FRONTEND_ECR}:${IMAGE_TAG}
-          """
-        }
-      }
-    }
-
     stage('Terraform Plan') {
       steps {
         dir('infrastructure') {
@@ -89,6 +72,23 @@ pipeline {
           withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
             sh 'terraform apply -input=false -auto-approve tfplan'
           }
+        }
+      }
+    }
+
+    stage('Push to ECR') {
+      steps {
+        withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
+          sh """
+            aws ecr get-login-password --region ${AWS_REGION} \\
+              | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+            docker tag backend-test:${IMAGE_TAG} ${BACKEND_ECR}:${IMAGE_TAG}
+            docker push ${BACKEND_ECR}:${IMAGE_TAG}
+
+            docker tag frontend-test:${IMAGE_TAG} ${FRONTEND_ECR}:${IMAGE_TAG}
+            docker push ${FRONTEND_ECR}:${IMAGE_TAG}
+          """
         }
       }
     }
