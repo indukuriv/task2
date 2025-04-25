@@ -2,69 +2,71 @@ pipeline {
   agent any
 
   environment {
-    AWS_REGION        = 'us-east-1'
-    AWS_DEFAULT_REGION= "${AWS_REGION}"
-    // Grab your AWS Account ID dynamically
-    AWS_ACCOUNT_ID    = sh(script: "aws sts get-caller-identity --query Account --output text", returnStdout: true).trim()
-    BACKEND_ECR       = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/lf-backend"
-    FRONTEND_ECR      = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/lf-frontend"
-    IMAGE_TAG         = "${env.BUILD_NUMBER}"
+    // ───────────── AWS & ECR Configuration ─────────────
+    AWS_REGION         = 'us-east-1'
+    AWS_ACCOUNT_ID     = '521051890477'
+    BACKEND_ECR        = '521051890477.dkr.ecr.us-east-1.amazonaws.com/lf-backend'
+    FRONTEND_ECR       = '521051890477.dkr.ecr.us-east-1.amazonaws.com/lf-frontend'
+    IMAGE_TAG          = "${env.BUILD_NUMBER}"
+
+    // ─────────── GitHub Repository Settings ───────────
+    GIT_REPO_URL       = 'git@github.com:YOUR-USER/your-challenge.git'
+    GIT_BRANCH         = 'main'
+    GIT_CREDENTIALS_ID = 'github-ssh-credentials'
+
+    // ───────── AWS Plugin Credential ID ─────────
+    AWS_CREDENTIALS_ID = 'aws-creds-id'
   }
 
   stages {
-    stage('Checkout') {
+    stage('Checkout Code') {
       steps {
-        checkout scm
+        git(
+          url:           env.GIT_REPO_URL,
+          branch:        env.GIT_BRANCH,
+          credentialsId: env.GIT_CREDENTIALS_ID
+        )
       }
     }
 
-    stage('Docker Build & Smoke Test') {
+    stage('Build & Smoke Test') {
       steps {
-        // Build images with local “test” tags
         dir('backend') {
           sh "docker build -t backend-test:${IMAGE_TAG} ."
         }
         dir('frontend') {
           sh "docker build -t frontend-test:${IMAGE_TAG} ."
         }
-
-        // Run & test them
         script {
-          // Backend smoke-test
-          sh "docker run -d --rm --name be-test -p 8080:8080 backend-test:${IMAGE_TAG}"
-          sleep 10
-          sh "curl -f http://localhost:8080 || { echo 'Backend did not respond'; exit 1; }"
-          sh "docker stop be-test"
+          sh '''
+            # Backend smoke-test
+            docker run -d --rm --name be-test -p 8080:8080 backend-test:${IMAGE_TAG}
+            sleep 10
+            curl --fail http://localhost:8080
+            docker stop be-test
 
-          // Frontend smoke-test
-          sh "docker run -d --rm --name fe-test -p 3000:3000 frontend-test:${IMAGE_TAG}"
-          sleep 10
-          sh "curl -f http://localhost:3000 || { echo 'Frontend did not respond'; exit 1; }"
-          sh "docker stop fe-test"
+            # Frontend smoke-test
+            docker run -d --rm --name fe-test -p 3000:3000 frontend-test:${IMAGE_TAG}
+            sleep 10
+            curl --fail http://localhost:3000
+            docker stop fe-test
+          '''
         }
       }
     }
 
-    stage('Build & Push Backend') {
+    stage('Push to ECR') {
       steps {
-        dir('backend') {
+        withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
           sh """
+            aws ecr get-login-password | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+            # backend
             docker tag backend-test:${IMAGE_TAG} ${BACKEND_ECR}:${IMAGE_TAG}
-            aws ecr get-login-password \
-              | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
             docker push ${BACKEND_ECR}:${IMAGE_TAG}
-          """
-        }
-      }
-    }
 
-    stage('Build & Push Frontend') {
-      steps {
-        dir('frontend') {
-          sh """
+            # frontend
             docker tag frontend-test:${IMAGE_TAG} ${FRONTEND_ECR}:${IMAGE_TAG}
-            aws ecr get-login-password \
-              | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
             docker push ${FRONTEND_ECR}:${IMAGE_TAG}
           """
         }
@@ -74,14 +76,15 @@ pipeline {
     stage('Terraform Init & Plan') {
       steps {
         dir('infrastructure') {
-          sh 'terraform init -input=false'
-          sh """
-            terraform plan \
-              -input=false \
-              -var="backend_image=${BACKEND_ECR}:${IMAGE_TAG}" \
-              -var="frontend_image=${FRONTEND_ECR}:${IMAGE_TAG}" \
-              -out=tfplan
-          """
+          withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
+            sh 'terraform init -input=false'
+            sh """
+              terraform plan -input=false \\
+                -var="backend_image=${BACKEND_ECR}:${IMAGE_TAG}" \\
+                -var="frontend_image=${FRONTEND_ECR}:${IMAGE_TAG}" \\
+                -out=tfplan
+            """
+          }
         }
       }
     }
@@ -89,7 +92,9 @@ pipeline {
     stage('Terraform Apply') {
       steps {
         dir('infrastructure') {
-          sh 'terraform apply -input=false -auto-approve tfplan'
+          withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
+            sh 'terraform apply -input=false -auto-approve tfplan'
+          }
         }
       }
     }
@@ -102,9 +107,8 @@ pipeline {
               script: 'terraform output -raw alb_dns_name || terraform output -raw alb_dns',
               returnStdout: true
             ).trim()
-            echo "✅ Deployment complete!"
-            echo "👉 Frontend: http://${alb}"
-            echo "👉 Backend API: http://${alb}/api"
+            echo "✅ Frontend: http://${alb}"
+            echo "✅ Backend:  http://${alb}/api"
           }
         }
       }
@@ -112,11 +116,5 @@ pipeline {
   }
 
   post {
-    success {
-      echo "🎉 Build ${env.BUILD_NUMBER} succeeded!"
-    }
-    failure {
-      echo "❌ Build ${env.BUILD_NUMBER} failed—check the logs above."
-    }
-  }
-}
+    success { echo "🎉 Build ${env.BUILD_NUMBER} SUCCEEDED" }
+    failure { echo "❌ Buil
