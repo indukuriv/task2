@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-   
+    
     GIT_REPO_URL       = "https://github.com/indukuriv/task2.git"
     AWS_REGION         = "us-east-1"
     ECR_ACCOUNT_ID     = "521051890477"
@@ -23,7 +23,8 @@ pipeline {
           if [ -r /etc/os-release ]; then
             . /etc/os-release
           else
-            echo "Cannot detect OS" >&2; exit 1
+            echo "Cannot detect OS" >&2
+            exit 1
           fi
 
           case "$ID" in
@@ -42,7 +43,8 @@ pipeline {
               sudo yum install -y docker git unzip awscli
               ;;
             *)
-              echo "Unsupported OS: $ID" >&2; exit 1
+              echo "Unsupported OS: $ID" >&2
+              exit 1
               ;;
           esac
 
@@ -147,6 +149,6 @@ pipeline {
     }
     failure {
       echo '❌ Full-stack deployment failed – check the logs.'
-    }
-  }
+    }
+  }
 }
