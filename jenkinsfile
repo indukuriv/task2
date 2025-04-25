@@ -3,145 +3,168 @@ pipeline {
 
   environment {
     
-    GIT_REPO_URL       = "https://github.com/indukuriv/task2.git"
-    AWS_REGION         = "us-east-1"
-    ECR_ACCOUNT_ID     = "521051890477"
-    FRONTEND_ECR_REPO  = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/frontend"
-    BACKEND_ECR_REPO   = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/backend"
-    ECS_CLUSTER        = "lightfeather-cluster"
-    FRONTEND_SERVICE   = "frontend-service"
-    BACKEND_SERVICE    = "backend-service"
-    IMAGE_TAG          = "${BUILD_NUMBER}"
+    AWS_REGION         = 'us-east-1'
+    AWS_ACCOUNT_ID     = '521051890477' 
+    BACKEND_ECR        = '521051890477.dkr.ecr.us-east-1.amazonaws.com/lf-backend'
+    FRONTEND_ECR       = '521051890477.dkr.ecr.us-east-1.amazonaws.com/lf-frontend'
+    IMAGE_TAG          = "${env.BUILD_NUMBER}"
+
+    
+    GIT_REPO_URL       = 'https://github.com/indukuriv/task2.git'
+    GIT_BRANCH         = 'test'
+    GIT_CREDENTIALS_ID = '61e8a378-4c82-42d0-998e-eb8521d1f190'
   }
 
   stages {
     stage('Install Prerequisites') {
       steps {
         sh '''
+          #!/bin/bash
           set -e
-          # Detect OS
-          if [ -r /etc/os-release ]; then
-            . /etc/os-release
-          else
-            echo "Cannot detect OS" >&2
-            exit 1
+
+          # 1) Docker
+          if ! command -v docker &> /dev/null; then
+            amazon-linux-extras install docker -y
+            systemctl enable --now docker
+            usermod -aG docker jenkins
           fi
 
-          case "$ID" in
-            amzn|amazon)
-              echo "Amazon Linux detected"
-              amazon-linux-extras install docker -y
-              yum install -y git unzip awscli
-              ;;
-            ubuntu|debian)
-              echo "Ubuntu/Debian detected"
-              sudo apt-get update
-              sudo apt-get install -y docker.io git unzip awscli
-              ;;
-            centos|rhel)
-              echo "RHEL/CentOS detected"
-              sudo yum install -y docker git unzip awscli
-              ;;
-            *)
-              echo "Unsupported OS: $ID" >&2
-              exit 1
-              ;;
-          esac
+          # 2) Git & unzip
+          if ! command -v git &> /dev/null; then
+            yum install -y git unzip
+          fi
 
-          # Install Terraform if missing
+          # 3) AWS CLI v2
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+            unzip -q awscliv2.zip
+            ./aws/install
+          fi
+
+          # 4) Terraform
           if ! command -v terraform &> /dev/null; then
             TERRAFORM_VERSION="1.4.6"
             wget -q https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
             unzip -q terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-            sudo mv terraform /usr/local/bin/
+            mv terraform /usr/local/bin/
           fi
 
-          # Install Node.js 16 if missing
+          # 5) Node.js 16
           if ! command -v node &> /dev/null; then
-            curl -sL https://rpm.nodesource.com/setup_16.x | sudo bash -
-            sudo apt-get install -y nodejs || sudo yum install -y nodejs
+            curl -sL https://rpm.nodesource.com/setup_16.x | bash -
+            yum install -y nodejs
           fi
 
+          # 6) Verify
+          docker --version
+          git --version
+          aws --version
+          terraform -v
+          node --version
+          npm --version
         '''
       }
     }
 
-    stage('Clone Repo') {
+    stage('Checkout Code') {
       steps {
-        git branch: 'main', url: "${GIT_REPO_URL}"
+        git(
+          url:           env.GIT_REPO_URL,
+          branch:        env.GIT_BRANCH,
+          credentialsId: env.GIT_CREDENTIALS_ID
+        )
       }
     }
 
-    stage('Build Docker Images') {
-      parallel {
-        stage('Build Frontend') {
-          steps {
-            dir('frontend') {
-              sh 'docker build -t ${FRONTEND_ECR_REPO}:${IMAGE_TAG} .'
-            }
-          }
-        }
-        stage('Build Backend') {
-          steps {
-            dir('backend') {
-              sh 'docker build -t ${BACKEND_ECR_REPO}:${IMAGE_TAG} .'
-            }
-          }
-        }
-      }
-    }
-
-    stage('Login to ECR') {
+    stage('Build & Smoke Test Docker Images') {
       steps {
-        sh '''
-          aws ecr get-login-password --region ${AWS_REGION} \
-            | docker login --username AWS --password-stdin ${FRONTEND_ECR_REPO}
-          aws ecr get-login-password --region ${AWS_REGION} \
-            | docker login --username AWS --password-stdin ${BACKEND_ECR_REPO}
-        '''
+        dir('backend') {
+          sh "docker build -t backend-test:${IMAGE_TAG} ."
+        }
+        dir('frontend') {
+          sh "docker build -t frontend-test:${IMAGE_TAG} ."
+        }
+        script {
+          // Backend test
+          sh '''
+            docker run -d --rm --name be-test -p 8080:8080 backend-test:${IMAGE_TAG}
+            sleep 10
+            curl --fail http://localhost:8080 || { echo "Backend FAILED"; exit 1; }
+            docker stop be-test
+          '''
+          // Frontend test
+          sh '''
+            docker run -d --rm --name fe-test -p 3000:3000 frontend-test:${IMAGE_TAG}
+            sleep 10
+            curl --fail http://localhost:3000 || { echo "Frontend FAILED"; exit 1; }
+            docker stop fe-test
+          '''
+        }
       }
     }
 
     stage('Push Images to ECR') {
-      parallel {
-        stage('Push Frontend') {
-          steps {
-            sh 'docker push ${FRONTEND_ECR_REPO}:${IMAGE_TAG}'
-          }
+      steps {
+        // Login once
+        sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        // Backend
+        dir('backend') {
+          sh """
+            docker tag backend-test:${IMAGE_TAG} ${BACKEND_ECR}:${IMAGE_TAG}
+            docker push ${BACKEND_ECR}:${IMAGE_TAG}
+          """
         }
-        stage('Push Backend') {
-          steps {
-            sh 'docker push ${BACKEND_ECR_REPO}:${IMAGE_TAG}'
-          }
+        // Frontend
+        dir('frontend') {
+          sh """
+            docker tag frontend-test:${IMAGE_TAG} ${FRONTEND_ECR}:${IMAGE_TAG}
+            docker push ${FRONTEND_ECR}:${IMAGE_TAG}
+          """
         }
       }
     }
 
-    stage('Deploy to ECS') {
+    stage('Terraform Init & Plan') {
       steps {
-        sh '''
-          aws ecs update-service \
-            --cluster ${ECS_CLUSTER} \
-            --service ${FRONTEND_SERVICE} \
-            --force-new-deployment \
-            --region ${AWS_REGION}
+        dir('infrastructure') {
+          sh 'terraform init -input=false'
+          sh """
+            terraform plan -input=false \\
+              -var="backend_image=${BACKEND_ECR}:${IMAGE_TAG}" \\
+              -var="frontend_image=${FRONTEND_ECR}:${IMAGE_TAG}" \\
+              -out=tfplan
+          """
+        }
+      }
+    }
 
-          aws ecs update-service \
-            --cluster ${ECS_CLUSTER} \
-            --service ${BACKEND_SERVICE} \
-            --force-new-deployment \
-            --region ${AWS_REGION}
-        '''
+    stage('Terraform Apply') {
+      steps {
+        dir('infrastructure') {
+          sh 'terraform apply -input=false -auto-approve tfplan'
+        }
+      }
+    }
+
+    stage('Outputs & Verification') {
+      steps {
+        dir('infrastructure') {
+          script {
+            def alb = sh(script: 'terraform output -raw alb_dns_name', returnStdout: true).trim()
+            echo "✅ Frontend: http://${alb}"
+            echo "✅ Backend API: http://${alb}/api"
+          }
+        }
       }
     }
   }
 
   post {
     success {
-      echo '✅ Full-stack deployment succeeded!'
+      echo "🎉 Build ${env.BUILD_NUMBER} SUCCESS"
     }
     failure {
-      echo '❌ Full-stack deployment failed – check the logs.'
+      echo "❌ Build ${env.BUILD_NUMBER} FAILED"
     }
   }
 }
