@@ -2,17 +2,17 @@ pipeline {
   agent any
 
   environment {
-    //Replace URLs
-    GIT_REPO_URL       = "<GIT_REPO_URL>"
-    AWS_REGION         = "<AWS_REGION>"
-    ECR_ACCOUNT_ID     = "<AWS_ACCOUNT_ID>"
-    FRONTEND_ECR_REPO  = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/frontend"
-    BACKEND_ECR_REPO   = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/backend"
-    ECS_CLUSTER        = "<ECS_CLUSTER_NAME>"
-    FRONTEND_SERVICE   = "<FRONTEND_SERVICE_NAME>"
-    BACKEND_SERVICE    = "<BACKEND_SERVICE_NAME>"
-    // You can override this via Jenkins BUILD_NUMBER or leave as “latest”
-    IMAGE_TAG          = "${env.BUILD_NUMBER ?: 'latest'}"
+    // Hard-coded values
+    GIT_REPO_URL       = "https://github.com/indukuriv/task1.git"
+    AWS_REGION         = "us-east-1"
+    ECR_ACCOUNT_ID     = "521051890477"
+    FRONTEND_ECR_REPO  = "521051890477.dkr.ecr.us-east-1.amazonaws.com/frontend"
+    BACKEND_ECR_REPO   = "521051890477.dkr.ecr.us-east-1.amazonaws.com/backend"
+    ECS_CLUSTER        = "lightfeather-cluster"
+    FRONTEND_SERVICE   = "frontend-service"
+    BACKEND_SERVICE    = "backend-service"
+    // Jenkins BUILD_NUMBER will be the image tag
+    IMAGE_TAG          = "${BUILD_NUMBER}"
   }
 
   stages {
@@ -23,7 +23,6 @@ pipeline {
 
           # 1) Docker
           if ! command -v docker &> /dev/null; then
-            echo "Installing Docker..."
             amazon-linux-extras install docker -y
             systemctl enable docker
             systemctl start docker
@@ -32,21 +31,17 @@ pipeline {
 
           # 2) Git & unzip
           if ! command -v git &> /dev/null; then
-            echo "Installing Git & unzip..."
             yum install -y git unzip
           fi
 
           # 3) AWS CLI v2
           if ! command -v aws &> /dev/null; then
-            echo "Installing AWS CLI v2..."
             curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip -q awscliv2.zip
-            ./aws/install
+            unzip -q awscliv2.zip && ./aws/install
           fi
 
           # 4) Terraform
           if ! command -v terraform &> /dev/null; then
-            echo "Installing Terraform..."
             TERRAFORM_VERSION="1.4.6"
             wget -q https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
             unzip -q terraform_${TERRAFORM_VERSION}_linux_amd64.zip
@@ -55,13 +50,11 @@ pipeline {
 
           # 5) Node.js 16
           if ! command -v node &> /dev/null; then
-            echo "Installing Node.js 16..."
             curl -sL https://rpm.nodesource.com/setup_16.x | bash -
             yum install -y nodejs
           fi
 
           # 6) Verify installs
-          echo "Verifying installations..."
           docker --version
           git --version
           aws --version
@@ -84,8 +77,7 @@ pipeline {
           steps {
             dir('frontend') {
               sh '''
-                echo "Building frontend Docker image..."
-                docker build -t $FRONTEND_ECR_REPO:$IMAGE_TAG .
+                docker build -t ${FRONTEND_ECR_REPO}:${IMAGE_TAG} .
               '''
             }
           }
@@ -94,8 +86,7 @@ pipeline {
           steps {
             dir('backend') {
               sh '''
-                echo "Building backend Docker image..."
-                docker build -t $BACKEND_ECR_REPO:$IMAGE_TAG .
+                docker build -t ${BACKEND_ECR_REPO}:${IMAGE_TAG} .
               '''
             }
           }
@@ -106,11 +97,10 @@ pipeline {
     stage('Login to ECR') {
       steps {
         sh '''
-          echo "Logging into ECR..."
-          aws ecr get-login-password --region $AWS_REGION \
-            | docker login --username AWS --password-stdin $FRONTEND_ECR_REPO
-          aws ecr get-login-password --region $AWS_REGION \
-            | docker login --username AWS --password-stdin $BACKEND_ECR_REPO
+          aws ecr get-login-password --region ${AWS_REGION} \
+            | docker login --username AWS --password-stdin ${FRONTEND_ECR_REPO}
+          aws ecr get-login-password --region ${AWS_REGION} \
+            | docker login --username AWS --password-stdin ${BACKEND_ECR_REPO}
         '''
       }
     }
@@ -120,16 +110,14 @@ pipeline {
         stage('Push Frontend') {
           steps {
             sh '''
-              echo "Pushing frontend image..."
-              docker push $FRONTEND_ECR_REPO:$IMAGE_TAG
+              docker push ${FRONTEND_ECR_REPO}:${IMAGE_TAG}
             '''
           }
         }
         stage('Push Backend') {
           steps {
             sh '''
-              echo "Pushing backend image..."
-              docker push $BACKEND_ECR_REPO:$IMAGE_TAG
+              docker push ${BACKEND_ECR_REPO}:${IMAGE_TAG}
             '''
           }
         }
@@ -139,17 +127,28 @@ pipeline {
     stage('Deploy to ECS') {
       steps {
         sh '''
-          echo "Deploying frontend service..."
           aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $FRONTEND_SERVICE \
+            --cluster ${ECS_CLUSTER} \
+            --service ${FRONTEND_SERVICE} \
             --force-new-deployment \
-            --region $AWS_REGION
+            --region ${AWS_REGION}
 
-          echo "Deploying backend service..."
           aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $BACKEND_SERVICE \
+            --cluster ${ECS_CLUSTER} \
+            --service ${BACKEND_SERVICE} \
             --force-new-deployment \
-            --region $AWS_REGION
-       
+            --region ${AWS_REGION}
+        '''
+      }
+    }
+  }
+
+  post {
+    success {
+      echo '✅ Full-stack deployment succeeded!'
+    }
+    failure {
+      echo '❌ Full-stack deployment failed – check the logs.'
+    }
+  }
+}
