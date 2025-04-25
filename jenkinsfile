@@ -2,30 +2,25 @@ pipeline {
   agent any
 
   environment {
-    // ───────────── AWS & ECR Configuration ─────────────
     AWS_REGION         = 'us-east-1'
     AWS_ACCOUNT_ID     = '521051890477'
     BACKEND_ECR        = '521051890477.dkr.ecr.us-east-1.amazonaws.com/lf-backend'
     FRONTEND_ECR       = '521051890477.dkr.ecr.us-east-1.amazonaws.com/lf-frontend'
     IMAGE_TAG          = "${env.BUILD_NUMBER}"
 
-    // ─────────── GitHub Repository Settings ───────────
     GIT_REPO_URL       = 'https://github.com/indukuriv/task2.git'
     GIT_BRANCH         = 'test'
     GIT_CREDENTIALS_ID = '61e8a378-4c82-42d0-998e-eb8521d1f190'
 
-    // ───────── AWS Plugin Credential ID ─────────
     AWS_CREDENTIALS_ID = '521051890477'
   }
 
   stages {
-    stage('Checkout Code') {
+    stage('Checkout') {
       steps {
-        git(
-          url:           env.GIT_REPO_URL,
-          branch:        env.GIT_BRANCH,
-          credentialsId: env.GIT_CREDENTIALS_ID
-        )
+        git url: env.GIT_REPO_URL,
+            branch: env.GIT_BRANCH,
+            credentialsId: env.GIT_CREDENTIALS_ID
       }
     }
 
@@ -39,13 +34,13 @@ pipeline {
         }
         script {
           sh '''
-            # Backend smoke-test
+            # Backend
             docker run -d --rm --name be-test -p 8080:8080 backend-test:${IMAGE_TAG}
             sleep 10
             curl --fail http://localhost:8080
             docker stop be-test
 
-            # Frontend smoke-test
+            # Frontend
             docker run -d --rm --name fe-test -p 3000:3000 frontend-test:${IMAGE_TAG}
             sleep 10
             curl --fail http://localhost:3000
@@ -59,13 +54,12 @@ pipeline {
       steps {
         withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
           sh """
-            aws ecr get-login-password | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+            aws ecr get-login-password --region ${AWS_REGION} \\
+              | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-            # backend
             docker tag backend-test:${IMAGE_TAG} ${BACKEND_ECR}:${IMAGE_TAG}
             docker push ${BACKEND_ECR}:${IMAGE_TAG}
 
-            # frontend
             docker tag frontend-test:${IMAGE_TAG} ${FRONTEND_ECR}:${IMAGE_TAG}
             docker push ${FRONTEND_ECR}:${IMAGE_TAG}
           """
@@ -73,7 +67,7 @@ pipeline {
       }
     }
 
-    stage('Terraform Init & Plan') {
+    stage('Terraform Plan') {
       steps {
         dir('infrastructure') {
           withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
@@ -107,8 +101,8 @@ pipeline {
               script: 'terraform output -raw alb_dns_name || terraform output -raw alb_dns',
               returnStdout: true
             ).trim()
-            echo "✅ Frontend: http://${alb}"
-            echo "✅ Backend:  http://${alb}/api"
+            echo "Frontend URL: http://${alb}"
+            echo "Backend URL:  http://${alb}/api"
           }
         }
       }
@@ -116,5 +110,11 @@ pipeline {
   }
 
   post {
-    success { echo "🎉 Build ${env.BUILD_NUMBER} SUCCEEDED" }
-    failure { echo "❌ Buil
+    success {
+      echo "Build ${env.BUILD_NUMBER} succeeded"
+    }
+    failure {
+      echo "Build ${env.BUILD_NUMBER} failed"
+    }
+  }
+}
