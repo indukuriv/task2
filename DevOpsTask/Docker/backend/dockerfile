@@ -1,0 +1,20 @@
+# Use Node.js 16 as base image
+FROM node:16
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Copy dependency files first (leverage Docker cache)
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Copy all other backend files
+COPY . .
+
+# Expose the port your app listens on
+EXPOSE 8080
+
+# Start the app
+CMD ["npm", "start"]
